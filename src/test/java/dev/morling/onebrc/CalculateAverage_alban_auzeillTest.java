@@ -38,7 +38,7 @@ class CalculateAverage_alban_auzeillTest {
 
     ByteArrayOutputStream outputStreamCaptor = new ByteArrayOutputStream();
     long start = System.currentTimeMillis();
-    CalculateAverage_alban_auzeill.average(inputFile, outputStreamCaptor);
+    CalculateAverage_alban_auzeill.execute(inputFile, outputStreamCaptor);
     long end = System.currentTimeMillis();
     System.out.println(STR."Time: \{end - start}ms");
     String expected = Files.readString(expectedFile, UTF_8);
@@ -53,7 +53,7 @@ class CalculateAverage_alban_auzeillTest {
 
     ByteArrayOutputStream outputStreamCaptor = new ByteArrayOutputStream();
     long start = System.currentTimeMillis();
-    CalculateAverage_alban_auzeill.average(inputFile, outputStreamCaptor);
+    CalculateAverage_alban_auzeill.execute(inputFile, outputStreamCaptor);
     long end = System.currentTimeMillis();
     System.out.println(STR."Time: \{end - start}ms");
     String expected = Files.readString(expectedFile, UTF_8);

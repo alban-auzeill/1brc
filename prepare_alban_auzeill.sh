@@ -15,6 +15,10 @@
 #  limitations under the License.
 #
 
-# Uncomment below to use sdk
-# source "$HOME/.sdkman/bin/sdkman-init.sh"
-# sdk use java 21.0.1-graal 1>&2
+source "$HOME/.sdkman/bin/sdkman-init.sh"
+sdk use java 21.0.2-graal 1>&2
+
+if [ ! -f target/CalculateAverage_alban_auzeill_image ]; then
+    NATIVE_IMAGE_OPTS="--gc=epsilon -O3 -march=native -R:MaxHeapSize=64m -H:-GenLoopSafepoints --enable-preview --initialize-at-build-time=dev.morling.onebrc.CalculateAverage_alban_auzeill"
+    native-image $NATIVE_IMAGE_OPTS -cp target/average-1.0.0-SNAPSHOT.jar -o target/CalculateAverage_alban_auzeill_image dev.morling.onebrc.CalculateAverage_alban_auzeill
+fi

@@ -17,148 +17,176 @@ package dev.morling.onebrc;
 
 import java.io.BufferedOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.file.Files;
+import java.lang.foreign.Arena;
+import java.lang.reflect.Field;
+import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicReference;
+import sun.misc.Unsafe;
 
 public class CalculateAverage_alban_auzeill {
 
     private static final String FILE = "./measurements.txt";
 
-    public static final int READ_BUFFER_SIZE = 12 * 1024 * 1024;
+    private static final int MIN_CHUNK_SIZE = 64 * 1024;
+
+    private static final Unsafe UNSAFE;
+
+    static {
+        try {
+            Field unsafe = Unsafe.class.getDeclaredField("theUnsafe");
+            unsafe.setAccessible(true);
+            UNSAFE = (Unsafe) unsafe.get(Unsafe.class);
+        }
+        catch (Throwable e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     public static void main(String[] args) throws IOException, InterruptedException {
+        if (Arrays.asList(args).contains("--worker")) {
+            spawn();
+        }
+        else {
+            execute();
+        }
+    }
+
+    private static void spawn() throws IOException {
+        ProcessHandle.Info info = ProcessHandle.current().info();
+        ArrayList<String> commands = new ArrayList<>();
+        info.command().ifPresent(commands::add);
+        info.arguments().ifPresent(args -> commands.addAll(Arrays.asList(args)));
+        commands.add("--worker");
+
+        new ProcessBuilder()
+                .command(commands)
+                .start()
+                .getInputStream()
+                .transferTo(System.out);
+    }
+
+    private static void execute() throws IOException, InterruptedException {
         var out = new BufferedOutputStream(System.out, 16 * 1024);
-        average(Paths.get(FILE), out);
+        execute(Paths.get(FILE), out);
         out.flush();
     }
 
-    static class Parser extends Thread {
-        final SynchronizedContext context;
-
-        public Parser(SynchronizedContext context) {
-            this.context = context;
-        }
-
-        @Override
-        public void run() {
-            try {
-                byte[] data = new byte[READ_BUFFER_SIZE];
-                int dataIndexEnd;
-                while ((dataIndexEnd = context.read(data)) > 0) {
-                    int dataIndex = 0;
-                    Node root = new Node(null, (byte) 0);
-                    Node current = root;
-                    boolean stateStation = true;
-                    int temperature = 0;
-                    boolean negative = false;
-                    while (dataIndex < dataIndexEnd) {
-                        byte ch = data[dataIndex];
-                        dataIndex++;
-                        if (stateStation) {
-                            if (ch == ';') {
-                                stateStation = false;
-                                temperature = 0;
-                                negative = false;
-                            }
-                            else {
-                                current = current.get(ch);
-                            }
-                        }
-                        else {
-                            if (ch == '\n' || dataIndex == dataIndexEnd) {
-                                current.add(negative ? -temperature : temperature);
-                                stateStation = true;
-                                current = root;
-                            }
-                            else if (ch == '-') {
-                                negative = true;
-                            }
-                            else if (ch != '.') {
-                                temperature = temperature * 10 + ch - '0';
-                            }
-                        }
-                    }
-                    context.merge(root);
-                }
-            }
-            catch (IOException ex) {
-                context.saveException(ex);
-            }
-        }
-    }
-
-    public static void average(Path inputPath, OutputStream out) throws IOException, InterruptedException {
-        int threadCount = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
-        try (var input = Files.newInputStream(inputPath)) {
-            var context = new SynchronizedContext(input);
+    public static void execute(Path inputPath, OutputStream out) throws IOException, InterruptedException {
+        try (var fileChannel = FileChannel.open(inputPath, StandardOpenOption.READ)) {
+            long fileSize = fileChannel.size();
+            long maxNumberOfChunk = Math.max(1, fileSize / MIN_CHUNK_SIZE);
+            int threadCount = (int) Math.min(maxNumberOfChunk, Math.max(1, Runtime.getRuntime().availableProcessors()));
+            var memorySegment = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
+            long fileAddress = memorySegment.address();
+            long chunkStart = 0;
+            long chunkSize = (fileSize / threadCount) + 1;
+            AtomicReference<RuntimeException> firstException = new AtomicReference<>();
             Thread[] threads = new Thread[threadCount];
+            Node mergedResult = new Node(null, (byte) 0);
             for (int i = 0; i < threadCount; i++) {
-                threads[i] = new Parser(context);
+                long chunkEnd = Math.min(chunkStart + chunkSize, fileSize);
+                threads[i] = new Parser(fileAddress, fileSize, chunkStart, chunkEnd, mergedResult, firstException);
                 threads[i].start();
+                chunkStart = chunkEnd;
             }
             for (int i = 0; i < threadCount; i++) {
                 threads[i].join();
             }
-            if (context.exception != null) {
-                throw context.exception;
+            var runtimeException = firstException.get();
+            if (runtimeException != null) {
+                throw runtimeException;
             }
             out.write('{');
-            context.result.write(out);
+            mergedResult.write(out);
             out.write('}');
             out.write('\n');
         }
     }
 
-    static class SynchronizedContext {
-        InputStream input;
-        byte[] previous = new byte[READ_BUFFER_SIZE];
-        int previousEnd = 0;
-        Node result;
-        IOException exception;
+    static class Parser extends Thread {
+        private final long fileAddress;
+        private final long fileSize;
+        private final long chunkStart;
+        private final long chunkEnd;
+        private final Node mergedResult;
+        private final AtomicReference<RuntimeException> firstException;
 
-        public SynchronizedContext(InputStream input) {
-            this.input = input;
-            result = new Node(null, (byte) 0);
+        public Parser(long fileAddress, long fileSize, long chunkStart, long chunkEnd, Node mergedResult, AtomicReference<RuntimeException> firstException) {
+            this.fileAddress = fileAddress;
+            this.fileSize = fileSize;
+            this.chunkStart = chunkStart;
+            this.chunkEnd = chunkEnd;
+            this.mergedResult = mergedResult;
+            this.firstException = firstException;
         }
 
-        int read(byte[] data) throws IOException {
-            if (exception != null) {
-                return 0;
-            }
-            synchronized (input) {
-                if (previousEnd > 0) {
-                    System.arraycopy(previous, 0, data, 0, previousEnd);
-                }
-                int read = input.read(data, previousEnd, data.length - previousEnd);
-                int end = read == -1 ? previousEnd : previousEnd + read;
-                if (end == data.length) {
-                    int newLineIndex = end - 1;
-                    while (data[newLineIndex] != '\n') {
-                        newLineIndex--;
+        @Override
+        public void run() {
+            try {
+                Node root = new Node(null, (byte) 0);
+                Node current = root;
+                boolean stateStation = true;
+                int temperature = 0;
+                boolean negative = false;
+                long memoryOffset = chunkStart;
+                long maxOffset = fileSize;
+
+                // except for the first chunk, skip the end of the potential previous line
+                if (chunkStart > 0) {
+                    while (memoryOffset < chunkEnd) {
+                        byte ch = UNSAFE.getByte(fileAddress + memoryOffset);
+                        memoryOffset++;
+                        if (ch == '\n') {
+                            break;
+                        }
                     }
-                    previousEnd = end - newLineIndex - 1;
-                    System.arraycopy(data, newLineIndex + 1, previous, 0, previousEnd);
-                    end = newLineIndex + 1;
                 }
-                else {
-                    previousEnd = 0;
+                while (memoryOffset < maxOffset) {
+                    byte ch = UNSAFE.getByte(fileAddress + memoryOffset);
+                    if (stateStation) {
+                        if (ch == ';') {
+                            stateStation = false;
+                            temperature = 0;
+                            negative = false;
+                        }
+                        else {
+                            current = current.get(ch);
+                        }
+                    }
+                    else {
+                        if (ch == '\n') {
+                            current.add(negative ? -temperature : temperature);
+                            stateStation = true;
+                            current = root;
+                            if (memoryOffset >= chunkEnd) {
+                                break;
+                            }
+                        }
+                        else if (ch == '-') {
+                            negative = true;
+                        }
+                        else if (ch != '.') {
+                            temperature = temperature * 10 + ch - '0';
+                        }
+                    }
+                    memoryOffset++;
                 }
-                return end;
+                // Not mandatory, but try to support if the file does not end with a new line
+                if (current != root && !stateStation) {
+                    current.add(negative ? -temperature : temperature);
+                }
+                synchronized (mergedResult) {
+                    mergedResult.merge(root);
+                }
             }
-        }
-
-        void merge(Node root) {
-            synchronized (result) {
-                result.merge(root);
-            }
-        }
-
-        synchronized void saveException(IOException ex) {
-            if (exception == null) {
-                exception = ex;
+            catch (RuntimeException ex) {
+                firstException.compareAndSet(null, ex);
             }
         }
     }
