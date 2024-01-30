@@ -39,30 +39,34 @@ public class ReadUsingFileInputStream {
     return count;
   }
 
-  public static long countByteInFileUsingThreadsWithBuffer(Path path, int threadCount) throws IOException, InterruptedException {
+  public static long countNewLineInFileUsingThreadsWithBuffer(Path path, int threadCount) throws IOException, InterruptedException {
     var fileSize = Files.size(path);
     var chunkSize = (fileSize / threadCount) + 1L;
     var exceptions = new ConcurrentLinkedDeque<Throwable>();
-    AtomicLong totalSize = new AtomicLong(0L);
+    AtomicLong totalNewLineCount = new AtomicLong(0L);
     Thread[] threads = new Thread[threadCount];
     for (int i = 0; i < threads.length; i++) {
       long start = Math.min(chunkSize * i, fileSize);
       long end = Math.min(chunkSize * (i + 1), fileSize);
       threads[i] = new Thread(() -> {
         try {
-          long size = 0;
           try (InputStream input = Files.newInputStream(path)) {
+            long nbNewLineCount = 0;
             input.skip(start);
             long remaining = end - start;
             byte[] buffer = new byte[256 * 1024];
             int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
             while (read > 0) {
-              size += read;
+              for (int j = 0; j < read; j++) {
+                if (buffer[j] == '\n') {
+                  nbNewLineCount++;
+                }
+              }
               remaining -= read;
               read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
             }
+            totalNewLineCount.addAndGet(nbNewLineCount);
           }
-          totalSize.addAndGet(size);
         } catch (IOException | RuntimeException e) {
           exceptions.add(e);
         }
@@ -75,7 +79,7 @@ public class ReadUsingFileInputStream {
     if (!exceptions.isEmpty()) {
       throw new RuntimeException(exceptions.getFirst());
     }
-    return totalSize.get();
+    return totalNewLineCount.get();
   }
 
 }
