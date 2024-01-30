@@ -19,7 +19,7 @@ if [ -f target/CalculateAverage_alban_auzeill_image ]; then
     echo "Picking up existing native image 'target/CalculateAverage_alban_auzeill_image', delete the file to select JVM mode." 1>&2
     target/CalculateAverage_alban_auzeill_image
 else
-    JAVA_OPTS="--enable-preview -Xmx128m -XX:+UseSerialGC -XX:-TieredCompilation"
+    JAVA_OPTS="--enable-preview -Xmx512m -XX:+UseSerialGC -XX:-TieredCompilation"
     echo "Chosing to run the app in JVM mode as no native image was found, use prepare_alban_auzeill.sh to generate." 1>&2
     java $JAVA_OPTS --class-path target/average-1.0.0-SNAPSHOT.jar dev.morling.onebrc.CalculateAverage_alban_auzeill
 fi
